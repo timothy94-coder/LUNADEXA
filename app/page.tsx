@@ -123,6 +123,185 @@ function Ic({ k }: { k: string }) {
   return <svg {...p}><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5z" fill="#ffd21f" /></svg>;
 }
 
+
+/* ================= Manage Liquidity: chart + swap-style panel ================= */
+const TOK: Record<string, { bg: string; ch: string; fg?: string }> = {
+  LUNA: { bg: "linear-gradient(135deg,#3cc4f0,#7c6cf0)", ch: "L", fg: "#fff" },
+  SOL: { bg: "#0d1018", ch: "S", fg: "#b98bff" },
+  USDC: { bg: "#2775ca", ch: "$", fg: "#fff" },
+};
+const TOKS = Object.keys(TOK);
+const TokIcon = ({ s, size = 34 }: { s: string; size?: number }) => (
+  <span className="tki" style={{ width: size, height: size, background: TOK[s].bg, color: TOK[s].fg, fontSize: size * 0.48 }}>{TOK[s].ch}</span>
+);
+const Svg = ({ d, size = 20 }: { d: string; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={d} /></svg>
+);
+const fmtN = (n: number) => (n >= 1 ? n.toLocaleString("en-US", { maximumFractionDigits: 4 }) : n === 0 ? "0" : n.toFixed(6).replace(/0+$/, ""));
+
+function Chart({ pair }: { pair: string }) {
+  const cv = useRef<HTMLCanvasElement>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const data = useMemo(() => {
+    let h = 7; for (const c of pair) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    const rnd = () => { h = (h * 1664525 + 1013904223) >>> 0; return h / 4294967296; };
+    const out: { o: number; h: number; l: number; c: number }[] = [];
+    let p = 0.0185;
+    for (let i = 0; i < 110; i++) {
+      const o = p, c = Math.max(0.0125, o + (rnd() - 0.5) * 0.0011 + Math.sin(i / 9) * 0.00018);
+      out.push({ o, c, h: Math.max(o, c) + rnd() * 0.0004, l: Math.min(o, c) - rnd() * 0.0004 }); p = c;
+    }
+    return out;
+  }, [pair]);
+
+  useEffect(() => {
+    const c = cv.current, w = wrap.current; if (!c || !w) return;
+    const draw = () => {
+      const W = w.clientWidth, H = w.clientHeight; if (W < 50 || H < 50) return;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      c.width = W * dpr; c.height = H * dpr;
+      const x = c.getContext("2d"); if (!x) return;
+      x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, W, H);
+      const AX = 74, BY = 30, pw = W - AX, ph = H - BY;
+      const hi = Math.max(...data.map((d) => d.h)), lo = Math.min(...data.map((d) => d.l));
+      const step = 0.0005, top = Math.ceil((hi + 0.0003) / step) * step, bot = Math.floor((lo - 0.0003) / step) * step;
+      const Y = (v: number) => ph - ((v - bot) / (top - bot)) * ph;
+      x.font = "13px sans-serif"; x.textBaseline = "middle";
+      x.strokeStyle = "#0b1022"; x.lineWidth = 1; x.fillStyle = "#c9d3ee";
+      const every = Math.max(1, Math.round(((top - bot) / step) / 8));
+      for (let v = bot; v <= top + 1e-9; v += step * every) { const y = Math.round(Y(v)) + .5; x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); x.fillText(v.toFixed(4), pw + 8, y); }
+      const lab = ["25", "05:00", "28", "Oct", "4", "6", "12:00"]; x.textAlign = "center";
+      lab.forEach((t, i) => { const xx = Math.round((pw / lab.length) * (i + 0.5)) + .5; x.beginPath(); x.moveTo(xx, 0); x.lineTo(xx, ph); x.stroke(); x.fillStyle = "#c9d3ee"; x.fillText(t, xx, ph + 16); });
+      x.textAlign = "left";
+      const cw = pw / data.length;
+      data.forEach((d, i) => {
+        const up = d.c >= d.o, col = up ? "#27d3b4" : "#f2517a", cx = i * cw + cw / 2;
+        x.strokeStyle = col; x.fillStyle = col; x.lineWidth = 1;
+        x.beginPath(); x.moveTo(cx, Y(d.h)); x.lineTo(cx, Y(d.l)); x.stroke();
+        const y1 = Y(Math.max(d.o, d.c)), y2 = Y(Math.min(d.o, d.c));
+        x.fillRect(cx - cw * 0.3, y1, cw * 0.6, Math.max(1, y2 - y1));
+      });
+      const tag = (v: number, label: string, bg: string, fg: string, dash: boolean) => {
+        const y = Y(v);
+        if (dash) { x.strokeStyle = "#5b6a95"; x.setLineDash([2, 3]); x.beginPath(); x.moveTo(0, y); x.lineTo(pw, y); x.stroke(); x.setLineDash([]); }
+        x.fillStyle = bg; x.fillRect(pw + 2, y - 11, AX - 4, 22); x.fillStyle = fg; x.fillText(v.toFixed(6), pw + 6, y);
+        if (label) { x.fillStyle = "#0b1022"; x.fillRect(pw - 52, y - 11, 50, 22); x.fillStyle = "#fff"; x.fillText(label, pw - 44, y); }
+      };
+      tag(hi, "High", "#0b1022", "#fff", true); tag(lo, "Low", "#0b1022", "#fff", true);
+      const last = data[data.length - 1]; tag(last.c, "", "#27d3b4", "#06251f", true);
+    };
+    draw(); const ro = new ResizeObserver(draw); ro.observe(w); return () => ro.disconnect();
+  }, [data]);
+
+  const l = data[data.length - 1], f = (n: number) => n.toFixed(6);
+  return (
+    <>
+      <div className="ohlc"><span>O</span>{f(l.o)} <span>H</span>{f(l.h)} <span>L</span>{f(l.l)} <span>C</span>{f(l.c)} {fmtN(l.c - l.o)} ({(((l.c - l.o) / l.o) * 100).toFixed(2)}%)</div>
+      <div className="plot" ref={wrap}><canvas ref={cv} /></div>
+    </>
+  );
+}
+
+function ManageView({ addr, publicKey, openWallet, toast }: { addr: string | null; publicKey: PublicKey | null; openWallet: () => void; toast: (m: string) => void }) {
+  const { connection } = useConnection();
+  const [from, setFrom] = useState("LUNA");
+  const [to, setTo] = useState("SOL");
+  const [amt, setAmt] = useState("");
+  const [sel, setSel] = useState<null | "from" | "to">(null);
+  const [solBal, setSolBal] = useState(0);
+  const [now, setNow] = useState<Date | null>(null);
+
+  useEffect(() => { setNow(new Date()); const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    let off = false; if (!publicKey) { setSolBal(0); return; }
+    const go = () => connection.getBalance(publicKey).then((b) => { if (!off) setSolBal(b / LAMPORTS_PER_SOL); }).catch(() => {});
+    go(); const t = setInterval(go, 15000); return () => { off = true; clearInterval(t); };
+  }, [publicKey, connection]);
+
+  const bal = (s: string) => (s === "SOL" ? solBal : 0);
+  const fb = addr ? bal(from) : 0, tb = addr ? bal(to) : 0;
+  const flip = () => { setFrom(to); setTo(from); setAmt(""); };
+  const pick = (side: "from" | "to", s: string) => {
+    setSel(null);
+    if (side === "from") { if (s === to) flip(); else setFrom(s); } else { if (s === from) flip(); else setTo(s); }
+  };
+  const num = parseFloat(amt) || 0;
+  const tz = now ? -now.getTimezoneOffset() / 60 : 0;
+  const clock = now ? now.toLocaleTimeString("en-GB") + ` (UTC${tz >= 0 ? "+" : ""}${tz})` : "";
+  const stamp = now ? `${String(now.getFullYear()).slice(2)}/${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}` : "";
+
+  let cta = "Swap", dis = false;
+  if (!addr) cta = "Connect Wallet"; else if (!num) { cta = "Enter an amount"; dis = true; } else if (num > fb) { cta = `Insufficient ${from} balance`; dis = true; }
+  const act = () => { if (!addr) return openWallet(); if (!dis) toast("Swaps and liquidity actions go live once the backend is connected."); };
+
+  const renderSide = (side: "from" | "to", s: string, b: number) => (
+    <div className="sbox">
+      <div className="sh">
+        <b>{side === "from" ? "From" : "To"}</b>
+        <span className="sbal"><Svg d="M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7zM3 7l12-3v3M17 14h2" size={15} /><u>{fmtN(b)}</u></span>
+        <button className="mx" disabled={!addr} onClick={() => setAmt(String(Math.max(0, s === "SOL" ? b - 0.01 : b)))}>Max</button>
+        <button className="mx" disabled={!addr} onClick={() => setAmt(String(b / 2))}>50%</button>
+      </div>
+      <div className="si">
+        <div className="tsel">
+          <button className="tp" onClick={() => setSel(sel === side ? null : side)} aria-haspopup="listbox"><TokIcon s={s} size={34} /><span>{s}</span><i className="chev" /></button>
+          {sel === side && (
+            <div className="tdd" role="listbox">{TOKS.map((t) => (<button key={t} role="option" aria-selected={t === s} onClick={() => pick(side, t)}><TokIcon s={t} size={26} />{t}</button>))}</div>
+          )}
+        </div>
+        <div className="amt">
+          {side === "from"
+            ? <input inputMode="decimal" placeholder="0.00" value={amt} aria-label="Amount to swap" onChange={(e) => /^\d*\.?\d*$/.test(e.target.value) && setAmt(e.target.value)} />
+            : <input value="" placeholder="0.00" readOnly aria-label="Amount to receive" />}
+          <small>~$0</small>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="mgw">
+      <section className="cpanel">
+        <div className="chead">
+          <span className="pair"><span className="pi"><TokIcon s={from} size={34} /><TokIcon s={to} size={34} /></span><b>{from} / {to}</b>
+            <button className="sw2" aria-label="Flip pair" onClick={flip}><Svg d="M7 7h12M16 3l4 4-4 4M17 17H5M8 21l-4-4 4-4" size={18} /></button></span>
+          <span className="stamp">{stamp}</span>
+        </div>
+        <div className="ctool">
+          <button className="tf">15m</button>
+          <button className="ib" aria-label="Candles"><Svg d="M7 4v16M17 6v12M5 8h4v8H5zM15 9h4v6h-4z" size={20} /></button>
+          <button className="ind"><i>ƒx</i> Indicators</button>
+          <span className="sp" />
+          <button className="ib" aria-label="Alerts"><Svg d="M12 8v5l3 2M5 3 2 6M19 3l3 3M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16z" size={22} /></button>
+          <button className="ib" aria-label="Settings"><Svg d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" size={22} /></button>
+          <button className="ib" aria-label="Fullscreen" onClick={() => document.querySelector(".cpanel")?.requestFullscreen?.().catch(() => {})}><Svg d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" size={22} /></button>
+          <button className="ib" aria-label="Screenshot"><Svg d="M4 8h3l2-3h6l2 3h3v11H4zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" size={22} /></button>
+        </div>
+        <Chart pair={from + "/" + to} />
+        <div className="cfoot"><span className="mute">Sample data — live prices connect with the backend</span><span className="sp" /><span>{clock}</span><button>%</button><button>log</button><button className="auto">auto</button></div>
+      </section>
+
+      <section className="rcol">
+        <div className="rbar">
+          <div className="seg"><button className="on">Market</button><button onClick={() => toast("Limit orders are coming soon")}>Limit</button></div>
+          <span className="sp" />
+          <span className="slip"><Svg d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4" size={16} /> 0.5%</span>
+          <button className="ib2" aria-label="Copy link" onClick={() => { navigator.clipboard.writeText(location.href).catch(() => {}); toast("Link copied"); }}><Svg d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" size={22} /></button>
+          <button className="ib2" aria-label="Swap view"><Svg d="M4 7h16M4 12h16M4 17h16" size={22} /></button>
+          <button className="ib2" aria-label="Chart"><Svg d="M5 20V10M12 20V4M19 20v-7" size={22} /></button>
+          <button className="ib2" aria-label="Orders"><Svg d="M3 6h18v12H3zM3 10h18" size={22} /></button>
+        </div>
+        <div className="spanel">
+          {renderSide("from", from, fb)}
+          <button className="mid" aria-label="Switch tokens" onClick={flip}><Svg d="M12 5v14M6 13l6 6 6-6" size={26} /></button>
+          {renderSide("to", to, tb)}
+          <button className="scta" disabled={dis} onClick={act}>{cta}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function Page() {
   const endpoint = useMemo(() => clusterApiUrl(CLUSTER), []);
   return (
@@ -158,6 +337,7 @@ function App() {
   const [over, setOver] = useState(false);
   const [rcpErr, setRcpErr] = useState(false);
   const [sc, setSc] = useState(false);
+  const [menu, setMenu] = useState(false);
   const [feed, setFeed] = useState(FEED0);
   const fi = useRef(3);
 
@@ -191,9 +371,12 @@ function App() {
 
   /* routing via hash */
   useEffect(() => {
-    const fn = () => { const v = location.hash.slice(1) || "home"; setView(VIEWS.includes(v) ? v : "home"); window.scrollTo(0, 0); };
+    const fn = () => { const v = location.hash.slice(1) || "home"; setView(VIEWS.includes(v) ? v : "home"); setMenu(false); window.scrollTo(0, 0); };
     fn(); window.addEventListener("hashchange", fn);
-    return () => window.removeEventListener("hashchange", fn);
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(false); };
+    const rs = () => { if (window.innerWidth > 860) setMenu(false); };
+    window.addEventListener("keydown", esc); window.addEventListener("resize", rs);
+    return () => { window.removeEventListener("hashchange", fn); window.removeEventListener("keydown", esc); window.removeEventListener("resize", rs); };
   }, []);
   useEffect(() => { if (connected && (modal === "list" || modal === "all" || modal === "qr")) setModal(null); }, [connected]); // eslint-disable-line
   useEffect(() => {
@@ -286,8 +469,16 @@ function App() {
       <header className={"top" + (sc ? " sc" : "")}>
         <a href="#home" aria-label="Luna home"><Logo /></a>
         <nav>{NAV.map(([v, t]) => <a key={v} href={"#" + v} className={view === v ? "on" : ""}>{t}</a>)}</nav>
-        <div className="hr">{hbtn}</div>
+        <div className="hr">{hbtn}<button className="burger" aria-label="Open menu" aria-expanded={menu} onClick={() => setMenu(true)}><i /><i /><i /></button></div>
       </header>
+
+      {/* mobile side menu (outside the header so the blurred header can't clip it) */}
+      <div className={"nbk" + (menu ? " on" : "")} onClick={() => setMenu(false)} />
+      <aside className={"drawer" + (menu ? " open" : "")} aria-hidden={!menu}>
+        <div className="dh"><Logo /><button aria-label="Close menu" onClick={() => setMenu(false)}>✕</button></div>
+        {NAV.map(([v, t]) => <a key={v} href={"#" + v} className={view === v ? "on" : ""} onClick={() => setMenu(false)}>{t}</a>)}
+        <a href="#portfolio" className={view === "portfolio" ? "on" : ""} onClick={() => setMenu(false)}>My Portfolio</a>
+      </aside>
 
       {/* ================= HOME ================= */}
       <main className={cls("home") + " home"}>
@@ -411,8 +602,13 @@ function App() {
             <span className="ar">›</span></a>))}</div>
       </main>
 
-      <main className={cls("pool")}><div className="sec"><h2>Liquidity Pool</h2><div className="ph">Coming soon</div></div></main>
-      <main className={cls("manage")}><div className="sec"><h2>Manage Liquidity</h2><div className="ph">Coming soon</div></div></main>
+      <main className={cls("pool")}>
+        <div className="lpw"><h1>Liquidity Pool</h1><div className="tab2"><span>My Pools</span></div>
+          <div className="pbox3">{!addr ? "Connect wallet to see your liquidity pools." : "No liquidity pools found for this wallet yet."}</div>
+          <h3 className="hh2">History</h3>
+          <div className="pbox4">{!addr ? "Connect wallet to see your positions." : "No liquidity history yet."}</div></div>
+      </main>
+      <main className={cls("manage") + " mg"}><ManageView addr={addr} publicKey={publicKey} openWallet={() => setModal("list")} toast={toast} /></main>
 
       {/* ================= PORTFOLIO ================= */}
       <main className={cls("portfolio")}>
@@ -629,7 +825,7 @@ textarea{resize:vertical;border-radius:22px}
 .foot small{color:#a6a6b2;font-size:14px}
 
 /* modal */
-.modal{position:fixed;inset:0;background:#000b;display:none;align-items:flex-start;justify-content:center;padding:70px 16px;z-index:30;overflow:auto}.modal.on{display:flex}
+.modal{position:fixed;inset:0;background:#000b;display:none;align-items:flex-start;justify-content:center;padding:70px 16px;z-index:200;overflow:auto}.modal.on{display:flex}
 .wm{width:100%;max-width:400px;background:#121214;border:1px solid #26262c;border-radius:30px;padding:20px 16px 18px}
 .wh{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;font-weight:600;font-size:18px}
 .wh button{background:none;border:0;color:#fff;font-size:22px;cursor:pointer;width:34px;height:34px}
@@ -649,15 +845,16 @@ textarea{resize:vertical;border-radius:22px}
 .qa a,.qa button{background:none;border:0;color:#fff;font:inherit;cursor:pointer;font-size:15px}.qa a:hover,.qa button:hover{color:#9d90ff}
 .okc{width:60px;height:60px;border-radius:50%;background:#26e07f22;color:var(--ok);display:grid;place-items:center;font-size:30px;margin:6px auto 12px}
 .dn{text-align:center;font-size:18px;margin-bottom:8px}
-#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1c1c20;border:1px solid #333;padding:13px 20px;border-radius:14px;z-index:40;max-width:90vw;font-size:14px;text-align:center;box-shadow:0 8px 30px #000a}
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1c1c20;border:1px solid #333;padding:13px 20px;border-radius:14px;z-index:210;max-width:90vw;font-size:14px;text-align:center;box-shadow:0 8px 30px #000a}
 
 /* ---------- responsive ---------- */
 @media(max-width:1000px){.fl2{max-width:660px}}
 @media(max-width:860px){
- .top{grid-template-columns:1fr auto;row-gap:14px;padding:14px 4vw}
- .hr{grid-column:2;grid-row:1}
- .top nav{grid-column:1/-1;grid-row:2;justify-content:space-between;padding:11px 14px;width:100%;gap:0}
- .top nav a{padding:0 3px;font-size:clamp(11px,3.3vw,14px)}
+ .top{grid-template-columns:1fr auto;padding:14px 4vw}
+ .top nav{display:none}
+ .hr{gap:10px;align-items:center}
+ .burger{display:inline-flex}
+ .view{padding-top:84px}.view.home{padding-top:0}
  .logo{font-size:24px}
  .cw{padding:11px 20px;font-size:14px}
  .tools{grid-template-columns:1fr}
@@ -770,4 +967,102 @@ textarea{resize:vertical;border-radius:22px}
  .wcard{width:calc(700*var(--u))}
 }
 @media(max-width:640px){.fph{height:420px}}
+
+/* ================= v5: mobile side menu ================= */
+.burger{display:none;flex-direction:column;justify-content:center;gap:5px;width:44px;height:44px;padding:0 12px;border:1.5px solid #333;border-radius:14px;background:#000;cursor:pointer}
+.burger i{display:block;height:2px;border-radius:2px;background:#fff}
+.nbk{position:fixed;inset:0;background:#000a;backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:opacity .25s;z-index:90}
+.nbk.on{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;bottom:0;left:0;width:min(300px,82vw);background:#0b0b0e;border-right:1px solid #26262c;box-shadow:12px 0 40px #000a;transform:translateX(-102%);visibility:hidden;transition:transform .28s ease,visibility 0s .28s;z-index:100;padding:18px 18px 28px;display:flex;flex-direction:column;gap:6px;overflow-y:auto}
+.drawer.open{transform:none;visibility:visible;transition:transform .28s ease}
+.dh{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.dh button{background:none;border:0;color:#fff;font-size:22px;cursor:pointer;width:40px;height:40px}
+.drawer>a{padding:15px 16px;border-radius:14px;font-size:17px;font-weight:500;color:#f0f0f4}
+.drawer>a:hover,.drawer>a.on{background:#17172a;color:#9d90ff}
+@media(max-width:860px){.burger{display:inline-flex}}
+@media(min-width:861px){.drawer,.nbk{display:none}}
+
+/* ================= v6: Liquidity Pool (portfolio style) + Manage Liquidity (chart + swap panel) ================= */
+.lpw{margin:70px 0 90px;padding:0 5vw}
+.lpw h1{font-size:40px;margin:0 0 38px;font-weight:600}
+.tab2{position:relative;width:max(46%,240px);height:50px;background:#1a2039;border-top-left-radius:12px;clip-path:polygon(0 0,96.6% 0,100% 100%,0 100%);display:flex;align-items:center;justify-content:center;padding-left:7%;font-weight:500;font-size:24px}
+.tab2 span{position:relative;line-height:50px}
+.tab2 span:after{content:"";position:absolute;left:50%;bottom:-1px;width:75px;height:2px;transform:translateX(-50%);background:linear-gradient(90deg,#3cc4f0,#7c6cf0)}
+.pbox3{background:#1a2039;border-radius:0 12px 12px 12px;min-height:170px;display:grid;place-items:center;text-align:center;color:#aab4cc;font-size:18px;padding:30px 16px}
+.hh2{margin:38px 0 14px;font-size:26px;font-weight:600}
+.pbox4{background:#1a2039;border-radius:12px;min-height:130px;display:grid;place-items:center;text-align:center;color:#aab4cc;font-size:18px;padding:30px 16px}
+@media(min-width:1100px){.lpw{padding:0 200px}}
+@media(max-width:640px){.lpw{margin-top:30px}.lpw h1{font-size:32px;margin-bottom:24px}.tab2{font-size:19px;height:46px}.pbox3,.pbox4{font-size:16px}}
+
+.view.mg{background:#060c16;padding-bottom:70px;min-height:100vh}
+.mgw{display:grid;grid-template-columns:minmax(0,1fr) clamp(380px,39.5%,642px);gap:20px;width:min(1625px,92vw);margin:34px auto 0;align-items:start;color:#fff}
+.cpanel{background:#1c243e;border-radius:16px;margin-top:50px;padding:16px 20px 14px;min-width:0}
+.chead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 6px 16px}
+.pair{display:flex;align-items:center;gap:12px;font-size:26px}.pair b{font-weight:600}
+.pi{display:inline-flex}.pi .tki+.tki{margin-left:-8px}
+.tki{display:inline-grid;place-items:center;border-radius:50%;font-weight:700;flex:none;border:2px solid #1c243e}
+.sw2{background:none;border:0;color:#8aa0d6;cursor:pointer;padding:4px;display:grid}.sw2:hover{color:#fff}
+.stamp{color:#8aa0d6;font-size:17px;white-space:nowrap}
+.ctool{display:flex;align-items:center;gap:6px;padding:8px 0 10px;color:#e8ecfa;font-size:17px;flex-wrap:wrap}
+.ctool button{background:none;border:0;color:inherit;cursor:pointer;font-size:inherit;display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px}
+.ctool button:hover{background:#2a3454}
+.ctool .tf{font-weight:600}.ind i{font-style:italic;font-family:serif}
+.sp{flex:1}
+.ohlc{font-size:14px;color:#27d3b4;padding:6px 10px 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ohlc span{color:#c9d3ee;margin-left:6px}.ohlc span:first-child{margin-left:0}
+.plot{position:relative;height:clamp(280px,30vw,456px)}
+.plot canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.cfoot{display:flex;align-items:center;gap:18px;padding:14px 6px 4px;font-size:16px;flex-wrap:wrap}
+.cfoot .mute{font-size:12px}
+.cfoot button{background:none;border:0;color:#fff;font-size:16px;cursor:pointer;padding:0}
+.cfoot .auto{color:#27d3b4}
+
+.rcol{min-width:0}
+.rbar{display:flex;align-items:center;gap:10px;height:40px;margin-bottom:10px}
+.seg{display:inline-flex;background:#1c243e;border-radius:12px;padding:4px}
+.seg button{background:none;border:0;color:#8aa0d6;font-size:17px;padding:6px 16px;border-radius:9px;cursor:pointer}
+.seg button.on{background:#333c59;color:#fff;font-weight:600}
+.slip{display:inline-flex;align-items:center;gap:6px;background:#1c243e;border-radius:10px;padding:8px 12px;font-size:17px}
+.ib2{background:none;border:0;color:#27c3e6;cursor:pointer;padding:4px;display:grid}.ib2:hover{color:#fff}
+.spanel{position:relative;background:#1c243e;border-radius:16px;padding:30px 30px 30px}
+.sbox{background:#0b1022;border-radius:12px;padding:0 0 20px;overflow:visible}
+.sh{display:flex;align-items:center;gap:8px;background:#141a30;border-radius:12px 12px 0 0;padding:16px 22px;font-size:18px}
+.sh b{flex:1;font-weight:600}
+.sbal{display:inline-flex;align-items:center;gap:6px;color:#8aa0d6;margin-right:4px}.sbal u{color:#8aa0d6}
+.mx{background:#2f3a5c;border:0;color:#8aa0d6;border-radius:6px;padding:4px 10px;font-size:15px;cursor:pointer}
+.mx:hover:not(:disabled){color:#fff}.mx:disabled{opacity:.55;cursor:default}
+.si{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px 0}
+.tsel{position:relative}
+.tp{display:inline-flex;align-items:center;gap:12px;background:#1c243e;border:0;color:#fff;font-size:30px;font-weight:500;border-radius:14px;padding:12px 18px 12px 14px;cursor:pointer}
+.tp:hover{background:#243050}
+.chev{width:9px;height:9px;border-right:2px solid #c9d3ee;border-bottom:2px solid #c9d3ee;transform:rotate(45deg);margin:-4px 2px 0 6px}
+.tdd{position:absolute;left:0;top:calc(100% + 8px);z-index:20;background:#141a30;border:1px solid #2f3a5c;border-radius:14px;padding:6px;min-width:190px;box-shadow:0 14px 40px #000a}
+.tdd button{display:flex;align-items:center;gap:12px;width:100%;background:none;border:0;color:#fff;font-size:20px;padding:10px 12px;border-radius:10px;cursor:pointer}
+.tdd button:hover,.tdd button[aria-selected=true]{background:#232c4a}
+.amt{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-end}
+.amt input{width:100%;background:none;border:0;color:#fff;font:inherit;font-size:34px;text-align:right;padding:0;box-shadow:none;outline:none}
+.amt input::placeholder{color:#44507a}
+.amt small{color:#8aa0d6;font-size:17px;margin-top:10px}
+.mid{position:relative;z-index:3;display:grid;place-items:center;width:50px;height:50px;border-radius:50%;background:#8a9ff0;border:0;color:#0b1022;margin:-18px auto -18px;cursor:pointer;transition:transform .2s}
+.mid:hover{transform:rotate(180deg)}
+.scta{width:100%;margin-top:30px;height:60px;border:0;border-radius:10px;background:linear-gradient(90deg,#27d0f1,#37d0d9);color:#0b1022;font-size:22px;font-weight:500;cursor:pointer;transition:filter .15s}
+.scta:hover:not(:disabled){filter:brightness(1.08)}
+.scta:disabled{background:#2f3a5c;color:#8aa0d6;cursor:not-allowed}
+
+@media(max-width:1000px){
+ .mgw{grid-template-columns:1fr;margin-top:18px}
+ .rcol{order:-1}
+ .cpanel{margin-top:0}
+ .plot{height:340px}
+}
+@media(max-width:640px){
+ .spanel{padding:18px 14px}
+ .sh{padding:12px 14px;font-size:16px}.si{padding:14px 14px 0}
+ .tp{font-size:22px;padding:8px 12px 8px 10px;gap:8px}.amt input{font-size:26px}
+ .pair{font-size:20px}.stamp{display:none}
+ .rbar .ib2:nth-of-type(n+2){display:none}
+ .scta{height:54px;font-size:19px;margin-top:22px}
+ .cfoot{gap:12px;font-size:14px}.ctool{font-size:15px}
+ .cpanel{padding:12px 10px}
+}
 `;
